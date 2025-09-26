@@ -86,3 +86,6 @@ ENABLE_FUZZY_MATCHING = True  # Включить fuzzy matching
 ENABLE_SIZE_CHECK = True  # Включить проверку по размеру
 ENABLE_DETAILED_LOGGING = True  # Включить детальное логирование
 
+# Настройки удаления файлов
+ENABLE_OLD_FILE_DELETION = True  # Включить удаление старых файлов при обновлении
+

@@ -6,7 +6,7 @@ import time
 import re
 import mysql.connector
 from mysql.connector import Error
-from .config import DB_CONFIG, CREATE_TRACKING_TABLE, ENABLE_FUZZY_MATCHING, ENABLE_DETAILED_LOGGING
+from .config import DB_CONFIG, CREATE_TRACKING_TABLE, ENABLE_FUZZY_MATCHING, ENABLE_DETAILED_LOGGING, ENABLE_OLD_FILE_DELETION
 from .lib.version_utils import VersionUtils
 
 
@@ -618,18 +618,25 @@ class DatabaseManager:
             print(f"       - checksum: {checksum}")
             print(f"       - download_dir.name: {download_dir.name if download_dir else 'N/A'}")
             
-            # Удаляем старый файл с диска
-            print(f"\n🗂️ ===== УДАЛЕНИЕ СТАРОГО ФАЙЛА =====")
-            print(f"📁 Старый файл для удаления:")
-            print(f"   🗂️ Путь в БД: {old_onserver}")
-            print(f"   🎯 Хранилище ID: {driver}")
-            print(f"   📝 Имя файла: {old_filename}")
-            
-            # Новая простая логика удаления файлов
-            from .lib.file_deleter import FileDeleter
-            FileDeleter.delete_old_file_simple(old_filename, old_onserver, driver)
-            
-            print(f"🗂️ ===== КОНЕЦ УДАЛЕНИЯ СТАРОГО ФАЙЛА =====\n")
+            # Удаляем старый файл с диска (если включено в конфигурации)
+            if ENABLE_OLD_FILE_DELETION:
+                print(f"\n🗂️ ===== УДАЛЕНИЕ СТАРОГО ФАЙЛА =====")
+                print(f"📁 Старый файл для удаления:")
+                print(f"   🗂️ Путь в БД: {old_onserver}")
+                print(f"   🎯 Хранилище ID: {driver}")
+                print(f"   📝 Имя файла: {old_filename}")
+                
+                # Новая простая логика удаления файлов
+                from .lib.file_deleter import FileDeleter
+                FileDeleter.delete_old_file_simple(old_filename, old_onserver, driver)
+                
+                print(f"🗂️ ===== КОНЕЦ УДАЛЕНИЯ СТАРОГО ФАЙЛА =====\n")
+            else:
+                print(f"\n⚠️ УДАЛЕНИЕ СТАРЫХ ФАЙЛОВ ОТКЛЮЧЕНО В КОНФИГУРАЦИИ")
+                print(f"📁 Старый файл НЕ будет удален: {old_filename}")
+                print(f"   🗂️ Путь в БД: {old_onserver}")
+                print(f"   🎯 Хранилище ID: {driver}")
+                print(f"💡 Для включения установите ENABLE_OLD_FILE_DELETION = True в config.py\n")
             
             # Формируем новые данные для обновления
             readable_name = self._transliterate_cyrillic(app_name)
