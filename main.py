@@ -10,12 +10,20 @@ import re
 import logging
 from pathlib import Path
 from datetime import datetime
-from .config import LINKS_FILE, BASE_DOWNLOAD_DIR, ENABLE_SHA256_CHECK, ENABLE_FUZZY_MATCHING, ENABLE_SIZE_CHECK, ENABLE_DETAILED_LOGGING
-from .database_api import DatabaseManagerAPI as DatabaseManager
-from .version_extractor import VersionExtractor
-from .lib.file_downloader import FileDownloader
-from .lib.apkpure_downloader import APKPureDownloader
-from .lib.duplicate_analyzer import DuplicateAnalyzer
+try:
+    from .config import LINKS_FILE, BASE_DOWNLOAD_DIR, ENABLE_SHA256_CHECK, ENABLE_FUZZY_MATCHING, ENABLE_SIZE_CHECK, ENABLE_DETAILED_LOGGING
+    from .database_api import DatabaseManagerAPI as DatabaseManager
+    from .version_extractor import VersionExtractor
+    from .lib.file_downloader import FileDownloader
+    from .lib.apkpure_downloader import APKPureDownloader
+    from .lib.duplicate_analyzer import DuplicateAnalyzer
+except ImportError:
+    from config import LINKS_FILE, BASE_DOWNLOAD_DIR, ENABLE_SHA256_CHECK, ENABLE_FUZZY_MATCHING, ENABLE_SIZE_CHECK, ENABLE_DETAILED_LOGGING
+    from database_api import DatabaseManagerAPI as DatabaseManager
+    from version_extractor import VersionExtractor
+    from lib.file_downloader import FileDownloader
+    from lib.apkpure_downloader import APKPureDownloader
+    from lib.duplicate_analyzer import DuplicateAnalyzer
 
 
 class FileProcessor:
@@ -283,7 +291,10 @@ class FileProcessor:
             file_extension = os.path.splitext(downloaded_file.name)[1]
             
             # Очищаем имя файла от суффиксов источников
-            from .lib.file_normalizer import FileNormalizer
+            try:
+                from .lib.file_normalizer import FileNormalizer
+            except ImportError:
+                from lib.file_normalizer import FileNormalizer
             clean_filename = FileNormalizer.clean_source_suffixes(downloaded_file.name)
             
             # Переименовываем файл на диске
@@ -295,6 +306,17 @@ class FileProcessor:
             
             self.logger.info(f"🏷️ Чистая версия для БД: {clean_version_for_check}")
             
+            # УДАЛЕНИЕ СТАРОГО ФАЙЛА - вызываем после скачивания и вычисления хеша, но до обновления БД
+            self.logger.info("🗑️ Удаляем старый файл...")
+            try:
+                deletion_success = self.db.delete_old_file(link_data['old_file_id'], link_data['news_id'])
+                if deletion_success:
+                    self.logger.info("✅ Старый файл успешно удален")
+                else:
+                    self.logger.warning("⚠️ Старый файл не был удален (не найден или ошибка)")
+            except Exception as e:
+                self.logger.error(f"❌ Ошибка при удалении старого файла: {e}")
+                # Продолжаем выполнение, не останавливаем процесс из-за ошибки удаления
             
             # Обновляем существующую запись в dle_files вместо создания новой
             self.logger.info("🔄 Обновляем существующую запись в dle_files...")

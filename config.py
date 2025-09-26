@@ -86,3 +86,11 @@ ENABLE_FUZZY_MATCHING = True  # Включить fuzzy matching
 ENABLE_SIZE_CHECK = True  # Включить проверку по размеру
 ENABLE_DETAILED_LOGGING = True  # Включить детальное логирование
 
+# Настройки удаления файлов
+FILE_DIRS = [
+    "/home2/n1/files",
+    "/www/n2.anplus1.com/files"
+]
+
+DELETION_LOG_FILE = "/var/log/parser_file_deletions.log"
+
