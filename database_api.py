@@ -5,8 +5,13 @@
 import requests
 import re
 import time
-from .config import API_CONFIG, ENABLE_FUZZY_MATCHING, ENABLE_DETAILED_LOGGING
-from .lib.version_utils import VersionUtils
+
+try:
+    from .config import API_CONFIG, ENABLE_FUZZY_MATCHING, ENABLE_DETAILED_LOGGING
+    from .lib.version_utils import VersionUtils
+except ImportError:
+    from config import API_CONFIG, ENABLE_FUZZY_MATCHING, ENABLE_DETAILED_LOGGING
+    from lib.version_utils import VersionUtils
 
 
 class DatabaseManagerAPI:
@@ -483,4 +488,120 @@ class DatabaseManagerAPI:
             import traceback
             print(f"🔧 Traceback: {traceback.format_exc()}")
             return None
+
+    def delete_old_file(self, old_file_id, news_id=None):
+        """Безопасное удаление старого файла по ID из dle_files"""
+        import os
+        import logging
+        from pathlib import Path
+        from datetime import datetime
+        try:
+            from .config import FILE_DIRS, DELETION_LOG_FILE
+        except ImportError:
+            from config import FILE_DIRS, DELETION_LOG_FILE
+        
+        # Настраиваем логирование удаления файлов
+        deletion_logger = logging.getLogger('file_deletion')
+        deletion_logger.setLevel(logging.INFO)
+        
+        # Удаляем существующие обработчики
+        for handler in deletion_logger.handlers[:]:
+            deletion_logger.removeHandler(handler)
+        
+        # Создаем директорию для лог-файла, если не существует
+        log_path = Path(DELETION_LOG_FILE)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Добавляем файловый и консольный обработчики
+        file_handler = logging.FileHandler(DELETION_LOG_FILE, encoding='utf-8')
+        console_handler = logging.StreamHandler()
+        
+        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+        file_handler.setFormatter(formatter)
+        console_handler.setFormatter(formatter)
+        
+        deletion_logger.addHandler(file_handler)
+        deletion_logger.addHandler(console_handler)
+        deletion_logger.propagate = False
+        
+        deletion_logger.info(f"🗑️ Начинаем удаление файла для old_file_id: {old_file_id}, news_id: {news_id}")
+        
+        try:
+            # Получаем данные старого файла из БД
+            response = self.api_request("get_file_info", data={"file_id": old_file_id})
+            
+            if not response.get("success"):
+                deletion_logger.warning(f"❌ Запись с ID {old_file_id} не найдена в dle_files")
+                return False
+            
+            file_data = response.get("file_info", {})
+            onserver = file_data.get("onserver", "").strip()
+            filename = file_data.get("name", "").strip()
+            
+            deletion_logger.info(f"📝 Данные старого файла - onserver: '{onserver}', name: '{filename}'")
+            
+            if not onserver:
+                deletion_logger.warning(f"❌ Поле onserver пусто для файла ID {old_file_id}")
+                return False
+            
+            # Очищаем путь от ведущих слешей и пробелов
+            onserver = onserver.strip().lstrip('/')
+            deletion_logger.info(f"🧹 Очищенный onserver путь: '{onserver}'")
+            
+            # Формируем кандидатов на удаление
+            candidates = []
+            for base_dir in FILE_DIRS:
+                candidate_path = Path(base_dir) / onserver
+                candidates.append((base_dir, candidate_path))
+                deletion_logger.info(f"🎯 Кандидат на удаление: {candidate_path}")
+            
+            # Ищем и удаляем файл
+            deleted = False
+            for base_dir, candidate_path in candidates:
+                deletion_logger.info(f"🔍 Проверяем путь: {candidate_path}")
+                
+                try:
+                    # Проверяем, что путь находится внутри базовой директории (защита от path traversal)
+                    base_path = Path(base_dir).resolve()
+                    resolved_candidate = candidate_path.resolve()
+                    
+                    try:
+                        # Проверяем, что resolved_candidate находится внутри base_path
+                        resolved_candidate.relative_to(base_path)
+                        deletion_logger.info(f"✅ Путь безопасен: {resolved_candidate}")
+                    except ValueError:
+                        deletion_logger.error(f"⚠️ Небезопасный путь (path traversal): {resolved_candidate}")
+                        continue
+                    
+                    # Проверяем существование файла
+                    if candidate_path.exists() and candidate_path.is_file():
+                        file_size = candidate_path.stat().st_size
+                        deletion_logger.info(f"📁 Файл найден: {candidate_path}, размер: {file_size} байт")
+                        
+                        # Удаляем файл
+                        candidate_path.unlink()
+                        deletion_logger.info(f"✅ Файл успешно удален: {candidate_path}")
+                        deleted = True
+                        break
+                    else:
+                        deletion_logger.info(f"❌ Файл не найден: {candidate_path}")
+                        
+                except Exception as e:
+                    deletion_logger.error(f"❌ Ошибка при работе с файлом {candidate_path}: {e}")
+                    import traceback
+                    deletion_logger.error(f"🔧 Traceback: {traceback.format_exc()}")
+                    continue
+            
+            if deleted:
+                deletion_logger.info(f"✅ ИТОГ: Файл с ID {old_file_id} успешно удален")
+                return True
+            else:
+                deletion_logger.warning(f"❌ ИТОГ: Файл с ID {old_file_id} не найден ни в одной из папок")
+                return False
+                
+        except Exception as e:
+            deletion_logger.error(f"❌ Критическая ошибка при удалении файла ID {old_file_id}: {e}")
+            import traceback
+            deletion_logger.error(f"🔧 Traceback: {traceback.format_exc()}")
+            return False
 
