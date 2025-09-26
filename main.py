@@ -8,14 +8,24 @@ import asyncio
 import os
 import re
 import logging
+import traceback
 from pathlib import Path
 from datetime import datetime
-from .config import LINKS_FILE, BASE_DOWNLOAD_DIR, ENABLE_SHA256_CHECK, ENABLE_FUZZY_MATCHING, ENABLE_SIZE_CHECK, ENABLE_DETAILED_LOGGING
-from .database_api import DatabaseManagerAPI as DatabaseManager
-from .version_extractor import VersionExtractor
-from .lib.file_downloader import FileDownloader
-from .lib.apkpure_downloader import APKPureDownloader
-from .lib.duplicate_analyzer import DuplicateAnalyzer
+
+try:
+    from .config import LINKS_FILE, BASE_DOWNLOAD_DIR, ENABLE_SHA256_CHECK, ENABLE_FUZZY_MATCHING, ENABLE_SIZE_CHECK, ENABLE_DETAILED_LOGGING, FILE_DIRS, DELETION_LOG_FILE
+    from .database_api import DatabaseManagerAPI as DatabaseManager
+    from .version_extractor import VersionExtractor
+    from .lib.file_downloader import FileDownloader
+    from .lib.apkpure_downloader import APKPureDownloader
+    from .lib.duplicate_analyzer import DuplicateAnalyzer
+except ImportError:
+    from config import LINKS_FILE, BASE_DOWNLOAD_DIR, ENABLE_SHA256_CHECK, ENABLE_FUZZY_MATCHING, ENABLE_SIZE_CHECK, ENABLE_DETAILED_LOGGING, FILE_DIRS, DELETION_LOG_FILE
+    from database_api import DatabaseManagerAPI as DatabaseManager
+    from version_extractor import VersionExtractor
+    from lib.file_downloader import FileDownloader
+    from lib.apkpure_downloader import APKPureDownloader
+    from lib.duplicate_analyzer import DuplicateAnalyzer
 
 
 class FileProcessor:
@@ -170,6 +180,138 @@ class FileProcessor:
             else:
                 return 0
 
+    def delete_old_file(self, old_file_id, news_id=None):
+        """
+        Безопасное удаление старого файла по его ID из dle_files.
+        
+        Args:
+            old_file_id: ID файла в таблице dle_files
+            news_id: ID новости (для логирования)
+            
+        Returns:
+            bool: True если файл был успешно удален или не найден, False при ошибке
+        """
+        # Настраиваем логирование для удаления файлов
+        deletion_logger = logging.getLogger('file_deletion')
+        deletion_logger.setLevel(logging.INFO)
+        
+        # Убираем существующие handlers чтобы избежать дублирования
+        deletion_logger.handlers.clear()
+        
+        # Добавляем handler для файла логов
+        try:
+            # Создаем директорию для лог-файла если её нет
+            log_dir = Path(DELETION_LOG_FILE).parent
+            log_dir.mkdir(parents=True, exist_ok=True)
+            
+            file_handler = logging.FileHandler(DELETION_LOG_FILE, encoding='utf-8')
+            file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+            deletion_logger.addHandler(file_handler)
+        except Exception as e:
+            self.logger.warning(f"⚠️ Не удалось настроить лог файл удаления: {e}")
+        
+        # Добавляем handler для консоли
+        console_handler = logging.StreamHandler()
+        console_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+        deletion_logger.addHandler(console_handler)
+        
+        try:
+            deletion_logger.info(f"🗑️ Начинаем удаление старого файла. old_file_id={old_file_id}, news_id={news_id}")
+            
+            # Получаем информацию о старом файле из БД
+            cursor = self.db.connection.cursor()
+            
+            select_query = "SELECT onserver, name FROM dle_files WHERE id = %s LIMIT 1"
+            cursor.execute(select_query, (old_file_id,))
+            result = cursor.fetchone()
+            
+            if not result:
+                deletion_logger.info(f"ℹ️ Файл с ID {old_file_id} не найден в dle_files - нечего удалять")
+                cursor.close()
+                return True
+                
+            onserver, filename = result
+            deletion_logger.info(f"📄 Найден файл в БД: name='{filename}', onserver='{onserver}'")
+            
+            if not onserver or not onserver.strip():
+                deletion_logger.info(f"ℹ️ Поле onserver пусто для файла ID {old_file_id} - нечего удалять")
+                cursor.close()
+                return True
+            
+            # Очищаем onserver от ведущих слэшей и пробелов
+            onserver = onserver.strip().lstrip('/')
+            deletion_logger.info(f"📁 Очищенный путь onserver: '{onserver}'")
+            
+            # Формируем пути для поиска файла
+            candidates = []
+            for base_dir in FILE_DIRS:
+                candidate_path = Path(base_dir) / onserver
+                candidates.append((base_dir, candidate_path))
+                deletion_logger.info(f"🔍 Кандидат для удаления: {candidate_path}")
+            
+            # Ищем и удаляем файл
+            file_deleted = False
+            
+            for base_dir, candidate_path in candidates:
+                try:
+                    # Проверяем безопасность пути - файл должен быть внутри базовой директории
+                    base_path_resolved = Path(base_dir).resolve()
+                    candidate_resolved = candidate_path.resolve()
+                    
+                    try:
+                        # Для Python >= 3.9
+                        if hasattr(candidate_resolved, 'is_relative_to'):
+                            is_safe = candidate_resolved.is_relative_to(base_path_resolved)
+                        else:
+                            # Для Python < 3.9
+                            try:
+                                candidate_resolved.relative_to(base_path_resolved)
+                                is_safe = True
+                            except ValueError:
+                                is_safe = False
+                    except Exception:
+                        is_safe = False
+                        
+                    if not is_safe:
+                        deletion_logger.warning(f"⚠️ Небезопасный путь обнаружен: {candidate_path} не находится в {base_dir}")
+                        continue
+                    
+                    deletion_logger.info(f"✅ Путь безопасен: {candidate_path}")
+                    
+                    # Проверяем существование файла
+                    if candidate_path.exists():
+                        # Получаем размер файла перед удалением
+                        file_size = candidate_path.stat().st_size
+                        deletion_logger.info(f"📊 Файл найден! Размер: {file_size} байт, полный путь: {candidate_path}")
+                        
+                        # Удаляем файл
+                        candidate_path.unlink()
+                        deletion_logger.info(f"✅ Файл успешно удален: {candidate_path}")
+                        
+                        file_deleted = True
+                        break
+                    else:
+                        deletion_logger.info(f"❌ Файл не существует: {candidate_path}")
+                        
+                except Exception as e:
+                    deletion_logger.error(f"❌ Ошибка при обработке пути {candidate_path}: {e}")
+                    deletion_logger.error(f"Traceback: {traceback.format_exc()}")
+                    continue
+            
+            cursor.close()
+            
+            if file_deleted:
+                deletion_logger.info(f"🎉 Файл удален успешно. old_file_id={old_file_id}, filename='{filename}'")
+                return True
+            else:
+                deletion_logger.info(f"ℹ️ Файл не найден ни в одной из директорий. old_file_id={old_file_id}, filename='{filename}'")
+                return True  # Возвращаем True, так как файл все равно отсутствует
+            
+        except Exception as e:
+            deletion_logger.error(f"❌ Критическая ошибка при удалении файла old_file_id={old_file_id}: {e}")
+            deletion_logger.error(f"Traceback: {traceback.format_exc()}")
+            return False
+
     async def process_single_link(self, link_data):
         """Обрабатываем одну ссылку с поддержкой множественных ссылок"""
         self.logger.info(f"\n🔄 Обрабатываем: {link_data['filename']} (ID: {link_data['news_id']})")
@@ -283,7 +425,10 @@ class FileProcessor:
             file_extension = os.path.splitext(downloaded_file.name)[1]
             
             # Очищаем имя файла от суффиксов источников
-            from .lib.file_normalizer import FileNormalizer
+            try:
+                from .lib.file_normalizer import FileNormalizer
+            except ImportError:
+                from lib.file_normalizer import FileNormalizer
             clean_filename = FileNormalizer.clean_source_suffixes(downloaded_file.name)
             
             # Переименовываем файл на диске
@@ -295,6 +440,11 @@ class FileProcessor:
             
             self.logger.info(f"🏷️ Чистая версия для БД: {clean_version_for_check}")
             
+            # УДАЛЕНИЕ СТАРОГО ФАЙЛА - вызываем после успешной загрузки и вычисления хеша/размера
+            self.logger.info("🗑️ Удаляем старый файл перед обновлением БД...")
+            deletion_success = self.delete_old_file(link_data['old_file_id'], link_data['news_id'])
+            if not deletion_success:
+                self.logger.warning("⚠️ Не удалось удалить старый файл, но продолжаем обработку...")
             
             # Обновляем существующую запись в dle_files вместо создания новой
             self.logger.info("🔄 Обновляем существующую запись в dle_files...")

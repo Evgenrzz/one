@@ -86,3 +86,22 @@ ENABLE_FUZZY_MATCHING = True  # Включить fuzzy matching
 ENABLE_SIZE_CHECK = True  # Включить проверку по размеру
 ENABLE_DETAILED_LOGGING = True  # Включить детальное логирование
 
+# Конфигурация для удаления файлов
+FILE_DIRS = [
+    "/home2/n1/files",
+    "/www/n2.anplus1.com/files"
+]
+
+DELETION_LOG_FILE = "/var/log/parser_file_deletions.log"
+
+# Конфигурация базы данных (для локального тестирования)
+DB_CONFIG = {
+    'host': 'localhost',
+    'database': 'test_db',
+    'user': 'test_user',
+    'password': 'test_password',
+    'port': 3306,
+    'charset': 'utf8mb4',
+    'collation': 'utf8mb4_general_ci'
+}
+
